@@ -430,6 +430,69 @@ def normalize_answer(value: str) -> str:
     return " ".join(value.replace("‑", "-").split())
 
 
+BASE_WORD_OVERRIDES = {
+    "biography": "life",
+    "biology": "life",
+    "centimetre": "metre",
+    "centigrade": "grade",
+    "happiness": "happy",
+    "darkness": "dark",
+    "growth": "grow",
+    "difference": "differ",
+    "freedom": "free",
+    "creativity": "create",
+    "responsibility": "responsible",
+    "pleasure": "please",
+    "chinese": "China",
+    "japanese": "Japan",
+    "mexican": "Mexico",
+    "russian": "Russia",
+    "dictionary": "dictate",
+    "directorate": "director",
+    "scholarly": "scholar",
+    "quickly": "quick",
+    "happily": "happy",
+    "yearly": "year",
+    "awkward": "awkward",
+}
+
+
+def base_word(question: QuizQuestion) -> str:
+    """Return the English stem to show alongside the affix meaning."""
+    word = question.english.removeprefix("to ").lower()
+    if word in BASE_WORD_OVERRIDES:
+        return BASE_WORD_OVERRIDES[word]
+
+    group = GROUP_BY_ID[question.group_id]
+    if group.kind == "Префикс":
+        prefixes = (
+            "contra", "extra", "super", "ultra", "under", "inter", "multi", "trans",
+            "centi", "semi", "over", "poly", "tele", "sub", "pre", "mis", "non",
+            "dis", "out", "bio", "co", "re", "de", "un", "in", "il", "ir", "im",
+            "en", "em", "ex", "by", "up",
+        )
+        for prefix in prefixes:
+            if word.startswith(f"{prefix}-"):
+                return word[len(prefix) + 1:]
+            if word.startswith(prefix) and len(word) > len(prefix) + 1:
+                return word[len(prefix):]
+        return word
+
+    suffix_rules = (
+        ("ization", "ize"), ("ation", "ate"), ("ition", "ite"), ("sion", "de"),
+        ("tion", "te"), ("ment", ""), ("ness", ""), ("hood", ""), ("ship", ""),
+        ("dom", ""), ("ity", "e"), ("ance", ""), ("ence", ""), ("able", ""),
+        ("ible", "e"), ("ive", ""), ("ful", ""), ("less", ""), ("ous", ""),
+        ("ery", ""), ("ism", ""), ("ist", ""), ("eer", ""), ("ee", ""),
+        ("er", ""), ("or", ""), ("ly", ""), ("ward", ""), ("ize", ""),
+        ("en", ""), ("al", ""), ("ic", ""), ("y", ""),
+    )
+    for suffix, replacement in suffix_rules:
+        if word.endswith(suffix) and len(word) > len(suffix):
+            return f"{word[:-len(suffix)]}{replacement}"
+    return word
+
+
 @router.message(CommandStart())
 async def start(message: Message) -> None:
     state = user_state(message.from_user.id)
@@ -503,13 +566,18 @@ async def quiz_stop(callback: CallbackQuery, bot: Bot) -> None:
 @router.callback_query(F.data == "quiz:next")
 async def quiz_next(callback: CallbackQuery, bot: Bot) -> None:
     state = user_state(callback.from_user.id)
+    previous_question = state.current_question
+    if previous_question is None:
+        await callback.answer("Сейчас нет вопроса.", show_alert=True)
+        return
     state.quiz_enabled = True
     question = make_question(state)
     if question is None:
         state.quiz_enabled = False
         await callback.answer("Нет включенных групп.", show_alert=True)
         return
-    await edit_question(bot, callback.message.chat.id, state)
+    result = Text("Правильный ответ: ", Bold(previous_question.english), ".")
+    await edit_question(bot, callback.message.chat.id, state, prefix=result)
     await callback.answer()
 
 
@@ -521,7 +589,10 @@ async def quiz_hint(callback: CallbackQuery) -> None:
         await callback.answer("Сейчас нет вопроса.", show_alert=True)
         return
     group = GROUP_BY_ID[question.group_id]
-    await callback.answer(f"Подсказка: {group.group}", show_alert=True)
+    await callback.answer(
+        f"Подсказка: {group.group}\nБазовое слово: {base_word(question)}",
+        show_alert=True,
+    )
 
 
 @router.callback_query(F.data.startswith("quiz:groups:"))
