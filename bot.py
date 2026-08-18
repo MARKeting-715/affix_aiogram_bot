@@ -64,6 +64,7 @@ class UserState:
     quiz_enabled: bool = False
     current_question: QuizQuestion | None = None
     main_message_id: int | None = None
+    question_message_id: int | None = None
     reminders: ReminderSettings = field(default_factory=ReminderSettings)
 
 
@@ -324,6 +325,70 @@ async def safe_edit_content(message: Message, content: Text, keyboard: InlineKey
             raise
 
 
+async def edit_main_quiz_menu(bot: Bot, chat_id: int, state: UserState) -> None:
+    if state.main_message_id is None:
+        return
+    try:
+        await bot.edit_message_text(
+            **quiz_menu_content(state).as_kwargs(),
+            chat_id=chat_id,
+            message_id=state.main_message_id,
+            reply_markup=quiz_menu_keyboard(state),
+        )
+    except TelegramBadRequest as error:
+        if "message is not modified" not in str(error):
+            raise
+
+
+async def delete_question_message(bot: Bot, chat_id: int, state: UserState) -> None:
+    question_message_id = state.question_message_id
+    state.question_message_id = None
+    if question_message_id is None:
+        return
+    try:
+        await bot.delete_message(chat_id, question_message_id)
+    except TelegramBadRequest:
+        pass
+
+
+async def send_question(bot: Bot, chat_id: int, state: UserState, prefix: Text | str | None = None) -> None:
+    question = state.current_question
+    if question is None:
+        return
+    sent = await bot.send_message(
+        chat_id,
+        **question_content(question, prefix=prefix).as_kwargs(),
+        reply_markup=quiz_keyboard(),
+    )
+    state.question_message_id = sent.message_id
+
+
+async def edit_question(
+    bot: Bot,
+    chat_id: int,
+    state: UserState,
+    prefix: Text | str | None = None,
+) -> None:
+    question = state.current_question
+    if question is None:
+        return
+    if state.question_message_id is None:
+        await send_question(bot, chat_id, state, prefix=prefix)
+        return
+    try:
+        await bot.edit_message_text(
+            **question_content(question, prefix=prefix).as_kwargs(),
+            chat_id=chat_id,
+            message_id=state.question_message_id,
+            reply_markup=quiz_keyboard(),
+        )
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error):
+            return
+        state.question_message_id = None
+        await send_question(bot, chat_id, state, prefix=prefix)
+
+
 async def edit_table_message(bot: Bot, message: Message, kind: str, page: int, keyboard: InlineKeyboardMarkup) -> None:
     rich_message, _ = make_rich_table_message(kind, page)
     if rich_message is not None:
@@ -405,12 +470,13 @@ async def quiz_menu(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "quiz:toggle")
-async def quiz_toggle(callback: CallbackQuery) -> None:
+async def quiz_toggle(callback: CallbackQuery, bot: Bot) -> None:
     state = user_state(callback.from_user.id)
     state.main_message_id = callback.message.message_id
     if state.quiz_enabled:
         state.quiz_enabled = False
         state.current_question = None
+        await delete_question_message(bot, callback.message.chat.id, state)
         await safe_edit_content(callback.message, quiz_menu_content(state), quiz_menu_keyboard(state))
     else:
         state.quiz_enabled = True
@@ -419,31 +485,31 @@ async def quiz_toggle(callback: CallbackQuery) -> None:
             state.quiz_enabled = False
             await callback.answer("Сначала включи хотя бы одну группу.", show_alert=True)
             return
-        await safe_edit_content(callback.message, question_content(question), quiz_keyboard())
+        await safe_edit_content(callback.message, quiz_menu_content(state), quiz_menu_keyboard(state))
+        await send_question(bot, callback.message.chat.id, state)
     await callback.answer()
 
 
 @router.callback_query(F.data == "quiz:stop")
-async def quiz_stop(callback: CallbackQuery) -> None:
+async def quiz_stop(callback: CallbackQuery, bot: Bot) -> None:
     state = user_state(callback.from_user.id)
-    state.main_message_id = callback.message.message_id
     state.quiz_enabled = False
     state.current_question = None
-    await safe_edit_content(callback.message, quiz_menu_content(state), quiz_menu_keyboard(state))
+    await delete_question_message(bot, callback.message.chat.id, state)
+    await edit_main_quiz_menu(bot, callback.message.chat.id, state)
     await callback.answer()
 
 
 @router.callback_query(F.data == "quiz:next")
-async def quiz_next(callback: CallbackQuery) -> None:
+async def quiz_next(callback: CallbackQuery, bot: Bot) -> None:
     state = user_state(callback.from_user.id)
-    state.main_message_id = callback.message.message_id
     state.quiz_enabled = True
     question = make_question(state)
     if question is None:
         state.quiz_enabled = False
         await callback.answer("Нет включенных групп.", show_alert=True)
         return
-    await safe_edit_content(callback.message, question_content(question), quiz_keyboard())
+    await edit_question(bot, callback.message.chat.id, state)
     await callback.answer()
 
 
@@ -455,7 +521,7 @@ async def quiz_hint(callback: CallbackQuery) -> None:
         await callback.answer("Сейчас нет вопроса.", show_alert=True)
         return
     group = GROUP_BY_ID[question.group_id]
-    await callback.answer(f"{group.kind}: {group.group}\nАффиксы: {group.affixes}", show_alert=True)
+    await callback.answer(f"Подсказка: {group.group}", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("quiz:groups:"))
@@ -550,23 +616,14 @@ async def answer_quiz(message: Message, bot: Bot) -> None:
         return
     correct = normalize_answer(message.text or "") == normalize_answer(question.english)
     result = Text("Верно.") if correct else Text("Неверно. Правильный ответ: ", Bold(question.english), ".")
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        pass
     next_question = make_question(state)
     if next_question is None:
         return
-    content = question_content(next_question, prefix=result)
-    if state.main_message_id is not None:
-        try:
-            await bot.edit_message_text(
-                **content.as_kwargs(),
-                chat_id=message.chat.id,
-                message_id=state.main_message_id,
-                reply_markup=quiz_keyboard(),
-            )
-            return
-        except TelegramBadRequest:
-            pass
-    sent = await message.answer(**content.as_kwargs(), reply_markup=quiz_keyboard())
-    state.main_message_id = sent.message_id
+    await edit_question(bot, message.chat.id, state, prefix=result)
 
 
 async def reminder_loop(bot: Bot) -> None:
