@@ -139,8 +139,9 @@ def group_settings_keyboard(state: UserState, page: int) -> InlineKeyboardMarkup
     rows = []
     for group in visible:
         mark = "✓" if group.id in state.enabled_group_ids else "×"
+        label = f"{mark} {group.affixes} | {group.group}"
         rows.append([InlineKeyboardButton(
-            text=f"{mark} {group.kind}: {group.group[:38]}",
+            text=f"{label[:61]}..." if len(label) > 64 else label,
             callback_data=f"quiz:g_toggle:{group.id}:{page}",
         )])
     nav = []
