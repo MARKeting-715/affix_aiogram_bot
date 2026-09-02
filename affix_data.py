@@ -33,6 +33,15 @@ class StudyExceptionSet:
     words: tuple[StudyWord, ...]
 
 
+@dataclass(frozen=True)
+class QuizPreset:
+    id: str
+    title: str
+    group_ids: frozenset[str]
+    study_words: tuple[StudyWord, ...]
+    exception_words: tuple[StudyWord, ...]
+
+
 def split_affixes(value: str) -> list[str]:
     parts = re.split(r",\s*", value)
     return [part.strip() for part in parts if part.strip()]
@@ -220,6 +229,17 @@ NOUNS_FROM_VERBS_EXCEPTION_SETS: tuple[StudyExceptionSet, ...] = (
 )
 
 AFFIX_GROUPS = AFFIX_GROUPS + NOUNS_FROM_VERBS_GROUPS
+NOUNS_FROM_VERBS_PRESET = QuizPreset(
+    "nouns_from_verbs",
+    "Suffixes forming nouns from verbs",
+    NOUNS_FROM_VERBS_GROUP_IDS,
+    NOUNS_FROM_VERBS_STUDY_WORDS,
+    tuple(word for exception_set in NOUNS_FROM_VERBS_EXCEPTION_SETS for word in exception_set.words),
+)
+QUIZ_PRESETS: tuple[QuizPreset, ...] = (NOUNS_FROM_VERBS_PRESET,)
+PRESET_BY_ID = {preset.id: preset for preset in QUIZ_PRESETS}
+PRESET_GROUP_IDS = frozenset(group_id for preset in QUIZ_PRESETS for group_id in preset.group_ids)
+SELECTABLE_AFFIX_GROUPS = tuple(group for group in AFFIX_GROUPS if group.id not in PRESET_GROUP_IDS)
 GROUP_BY_ID = {
     **{group.id: group for group in AFFIX_GROUPS},
     NOUNS_FROM_VERBS_EXCEPTION_GROUP.id: NOUNS_FROM_VERBS_EXCEPTION_GROUP,

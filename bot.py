@@ -27,8 +27,9 @@ except ImportError:
 from affix_data import (
     AFFIX_GROUPS,
     GROUP_BY_ID,
-    NOUNS_FROM_VERBS_EXCEPTION_SETS,
-    NOUNS_FROM_VERBS_STUDY_WORDS,
+    PRESET_BY_ID,
+    QUIZ_PRESETS,
+    SELECTABLE_AFFIX_GROUPS,
     AffixGroup,
     groups_by_kind,
 )
@@ -75,14 +76,13 @@ class QuizQuestion:
 
 @dataclass
 class UserState:
-    enabled_group_ids: set[str] = field(default_factory=lambda: {group.id for group in AFFIX_GROUPS})
+    enabled_group_ids: set[str] = field(default_factory=set)
+    enabled_preset_ids: set[str] = field(default_factory=set)
     quiz_enabled: bool = False
     current_question: QuizQuestion | None = None
     main_message_id: int | None = None
     question_message_id: int | None = None
     word_source: str = "static"
-    include_study_words: bool = True
-    include_exceptions: bool = False
     reminders: ReminderSettings = field(default_factory=ReminderSettings)
 
 
@@ -153,10 +153,17 @@ def quiz_keyboard() -> InlineKeyboardMarkup:
 
 
 def group_settings_keyboard(state: UserState, page: int) -> InlineKeyboardMarkup:
-    groups = list(AFFIX_GROUPS)
+    groups = list(SELECTABLE_AFFIX_GROUPS)
     max_page = max(0, (len(groups) - 1) // PAGE_SIZE)
     visible = groups[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
     rows = []
+    for preset in QUIZ_PRESETS:
+        mark = "V" if preset.id in state.enabled_preset_ids else "X"
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {preset.title}",
+            callback_data=f"quiz:preset:{preset.id}:{page}",
+            style="primary" if preset.id in state.enabled_preset_ids else None,
+        )])
     for group in visible:
         mark = "✓" if group.id in state.enabled_group_ids else "×"
         label = f"{mark} {group.affixes} | {group.group}"
@@ -171,19 +178,14 @@ def group_settings_keyboard(state: UserState, page: int) -> InlineKeyboardMarkup
         nav.append(InlineKeyboardButton(text="Дальше", callback_data=f"quiz:groups:{page + 1}"))
     if nav:
         rows.append(nav)
-    all_enabled = all(group.id in state.enabled_group_ids for group in groups)
+    all_enabled = (
+        all(group.id in state.enabled_group_ids for group in groups)
+        and all(preset.id in state.enabled_preset_ids for preset in QUIZ_PRESETS)
+    )
     rows.append([InlineKeyboardButton(
         text="Выключить все" if all_enabled else "Включить все",
         callback_data=f"quiz:g_all:{page}",
         style="danger" if all_enabled else "success",
-    )])
-    rows.append([InlineKeyboardButton(
-        text=f"Слова из упражнения: {'V' if state.include_study_words else 'X'}",
-        callback_data="quiz:study_words",
-    )])
-    rows.append([InlineKeyboardButton(
-        text=f"Слова-исключения: {'V' if state.include_exceptions else 'X'}",
-        callback_data="quiz:exceptions",
     )])
     rows.append([InlineKeyboardButton(text="К опросу", callback_data="quiz:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -244,7 +246,8 @@ def quiz_menu_content(state: UserState) -> Text:
     return as_list(
         Bold("Опрос"),
         as_key_value("Статус", Bold("идет" if state.quiz_enabled else "остановлен")),
-        as_key_value("Включено групп", Bold(f"{len(state.enabled_group_ids)}/{len(AFFIX_GROUPS)}")),
+        as_key_value("Обычных групп", Bold(f"{len(state.enabled_group_ids)}/{len(SELECTABLE_AFFIX_GROUPS)}")),
+        as_key_value("Пресетов", Bold(f"{len(state.enabled_preset_ids)}/{len(QUIZ_PRESETS)}")),
         as_key_value("Источник слов", Bold("примеры из таблиц" if state.word_source == "static" else "Wiktionary")),
         "Вопросы идут с русского на английский. После ответа бот показывает правильный вариант.",
     )
@@ -253,9 +256,8 @@ def quiz_menu_content(state: UserState) -> Text:
 def group_settings_content(state: UserState) -> Text:
     return as_list(
         Bold("Группы для опроса"),
-        f"Включай и выключай значения из 2-го столбца таблицы. Сейчас активно: {len(state.enabled_group_ids)}.",
-        f"Слова из упражнения: {'V' if state.include_study_words else 'X'}. Слова-исключения: {'V' if state.include_exceptions else 'X'}.",
-        "Исключения появятся только при выборе всех связанных с ними подготовленных групп.",
+        "Сначала выбери готовый пресет. Он включает все свои окончания, слова из упражнения и исключения.",
+        f"Сейчас выбрано: {len(state.enabled_preset_ids)} пресетов и {len(state.enabled_group_ids)} обычных групп.",
     )
 
 
@@ -467,26 +469,30 @@ async def edit_table_message(bot: Bot, message: Message, kind: str, page: int, k
 
 def active_examples(state: UserState) -> list[tuple[AffixGroup, str, str, str | None]]:
     items: list[tuple[AffixGroup, str, str, str | None]] = []
-    for group in AFFIX_GROUPS:
+    for group in SELECTABLE_AFFIX_GROUPS:
         if group.id in state.enabled_group_ids:
             if state.word_source == "static":
                 items.extend((group, english, russian, None) for english, russian in group.examples)
             else:
                 items.extend((group, english, russian, None) for english, russian in dictionary_examples.get(group.id, ()))
 
-    if state.word_source == "static" and state.include_study_words:
-        items.extend(
-            (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
-            for word in NOUNS_FROM_VERBS_STUDY_WORDS
-            if word.group_id in state.enabled_group_ids
-        )
-    if state.word_source == "static" and state.include_exceptions:
-        for exception_set in NOUNS_FROM_VERBS_EXCEPTION_SETS:
-            if exception_set.group_ids.issubset(state.enabled_group_ids):
-                items.extend(
-                    (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
-                    for word in exception_set.words
-                )
+    for preset_id in state.enabled_preset_ids:
+        preset = PRESET_BY_ID[preset_id]
+        for group_id in preset.group_ids:
+            group = GROUP_BY_ID[group_id]
+            if state.word_source == "static":
+                items.extend((group, english, russian, None) for english, russian in group.examples)
+            else:
+                items.extend((group, english, russian, None) for english, russian in dictionary_examples.get(group_id, ()))
+        if state.word_source == "static":
+            items.extend(
+                (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
+                for word in preset.study_words
+            )
+            items.extend(
+                (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
+                for word in preset.exception_words
+            )
     return items
 
 
@@ -675,7 +681,7 @@ async def quiz_toggle(callback: CallbackQuery, bot: Bot) -> None:
             message = (
                 "В динамичном режиме пока нет слов Wiktionary. Подожди завершения загрузки и проверь выбранные группы."
                 if state.word_source == "dynamic"
-                else "Сначала включи хотя бы одну группу."
+                else "Сначала выбери пресет или включи хотя бы одну обычную группу."
             )
             await callback.answer(message, show_alert=True)
             return
@@ -743,20 +749,15 @@ async def quiz_groups(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "quiz:study_words")
-async def quiz_study_words(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("quiz:preset:"))
+async def quiz_preset_toggle(callback: CallbackQuery) -> None:
     state = user_state(callback.from_user.id)
-    state.include_study_words = not state.include_study_words
-    page = 0
-    await safe_edit_content(callback.message, group_settings_content(state), group_settings_keyboard(state, page))
-    await callback.answer()
-
-
-@router.callback_query(F.data == "quiz:exceptions")
-async def quiz_exceptions(callback: CallbackQuery) -> None:
-    state = user_state(callback.from_user.id)
-    state.include_exceptions = not state.include_exceptions
-    page = 0
+    _, _, preset_id, page_raw = callback.data.split(":")
+    if preset_id in state.enabled_preset_ids:
+        state.enabled_preset_ids.remove(preset_id)
+    else:
+        state.enabled_preset_ids.add(preset_id)
+    page = int(page_raw)
     await safe_edit_content(callback.message, group_settings_content(state), group_settings_keyboard(state, page))
     await callback.answer()
 
@@ -779,11 +780,14 @@ async def quiz_group_toggle(callback: CallbackQuery) -> None:
 async def quiz_group_all(callback: CallbackQuery) -> None:
     state = user_state(callback.from_user.id)
     state.main_message_id = callback.message.message_id
-    all_group_ids = {group.id for group in AFFIX_GROUPS}
-    if all_group_ids.issubset(state.enabled_group_ids):
+    all_group_ids = {group.id for group in SELECTABLE_AFFIX_GROUPS}
+    all_preset_ids = {preset.id for preset in QUIZ_PRESETS}
+    if all_group_ids.issubset(state.enabled_group_ids) and all_preset_ids.issubset(state.enabled_preset_ids):
         state.enabled_group_ids.clear()
+        state.enabled_preset_ids.clear()
     else:
         state.enabled_group_ids = all_group_ids
+        state.enabled_preset_ids = all_preset_ids
     page = int(callback.data.rsplit(":", 1)[1])
     await safe_edit_content(callback.message, group_settings_content(state), group_settings_keyboard(state, page))
     await callback.answer()
