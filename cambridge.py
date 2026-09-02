@@ -5,7 +5,7 @@ import html
 import re
 from typing import Any
 
-from affix_data import AFFIX_GROUPS, AffixGroup, split_affixes
+from affix_data import AFFIX_GROUPS, NOUNS_FROM_VERBS_STUDY_WORDS, AffixGroup, split_affixes
 
 
 API_BASE_URL = "https://dictionary.cambridge.org/api/v1"
@@ -31,24 +31,31 @@ def normal_word(value: str) -> str:
 
 
 def candidate_words() -> tuple[str, ...]:
-    words = {normal_word(word) for group in AFFIX_GROUPS for word, _ in group.examples}
-    words.update(f"{prefix}{root}" for prefix in PREFIXES for root in PREFIX_ROOTS)
-    return tuple(sorted(words))[:MAX_WORDS]
+    study_words = {normal_word(word) for group in AFFIX_GROUPS for word, _ in group.examples}
+    study_words.update(normal_word(word.english) for word in NOUNS_FROM_VERBS_STUDY_WORDS)
+    generated_words = {
+        f"{prefix}{root}"
+        for prefix in PREFIXES
+        for root in PREFIX_ROOTS
+        if f"{prefix}{root}" not in study_words
+    }
+    remaining = max(0, MAX_WORDS - len(study_words))
+    return tuple(sorted(study_words)) + tuple(sorted(generated_words))[:remaining]
 
 
-def group_for_word(word: str) -> AffixGroup | None:
+def groups_for_word(word: str) -> tuple[AffixGroup, ...]:
     normalized = normal_word(word)
-    matches: list[tuple[int, AffixGroup]] = []
+    matches: list[AffixGroup] = []
     for group in AFFIX_GROUPS:
         for affix in split_affixes(group.affixes):
             clean = re.sub(r"\([^)]*\)", "", affix).strip("- ").lower().replace("/", "")
             if not clean:
                 continue
             if group.kind == "Префикс" and normalized.startswith(clean):
-                matches.append((len(clean), group))
+                matches.append(group)
             if group.kind == "Суффикс" and normalized.endswith(clean):
-                matches.append((len(clean), group))
-    return max(matches, default=(0, None), key=lambda item: item[0])[1]
+                matches.append(group)
+    return tuple({group.id: group for group in matches}.values())
 
 
 def find_russian_translation(entry_content: str) -> str | None:
@@ -139,10 +146,11 @@ async def load_words(access_key: str, dictionary_code: str | None = None) -> tup
         if item is None:
             continue
         word, translation, base = item
-        group = group_for_word(word)
-        if group is None:
+        groups = groups_for_word(word)
+        if not groups:
             continue
-        examples.setdefault(group.id, []).append((word, translation))
+        for group in groups:
+            examples.setdefault(group.id, []).append((word, translation))
         if base:
             bases[word] = base
     return examples, bases

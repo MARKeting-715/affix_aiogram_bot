@@ -18,6 +18,21 @@ class AffixGroup:
         return len(split_affixes(self.affixes))
 
 
+@dataclass(frozen=True)
+class StudyWord:
+    group_id: str
+    base_word: str
+    english: str
+    russian: str
+
+
+@dataclass(frozen=True)
+class StudyExceptionSet:
+    title: str
+    group_ids: frozenset[str]
+    words: tuple[StudyWord, ...]
+
+
 def split_affixes(value: str) -> list[str]:
     parts = re.split(r",\s*", value)
     return [part.strip() for part in parts if part.strip()]
@@ -82,7 +97,133 @@ AFFIX_GROUPS: tuple[AffixGroup, ...] = (
     AffixGroup("s_y", "Суффикс", "для образования прилагательных от существительных", "-y", "", (("dusty", "пыльный"), ("bushy", "покрытый кустарником"), ("cloudy", "облачный"))),
 )
 
-GROUP_BY_ID = {group.id: group for group in AFFIX_GROUPS}
+
+NOUNS_FROM_VERBS_TITLE = "8.1. Nouns from verbs"
+NOUNS_FROM_VERBS_GROUPS: tuple[AffixGroup, ...] = (
+    AffixGroup("nv_age", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: результат или место действия", "-age", "", (("passage", "проход, отрывок"),)),
+    AffixGroup("nv_al", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: существительное от глагола", "-al", "", (("arrival", "прибытие"),)),
+    AffixGroup("nv_ance", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: существительное от глагола", "-ance", "", (("ignorance", "невежество"),)),
+    AffixGroup("nv_ation", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: действие или результат действия", "-ation", "", (("admiration", "восхищение"),)),
+    AffixGroup("nv_ence", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: существительное от глагола", "-ence", "", (("dependence", "зависимость"),)),
+    AffixGroup("nv_er", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: лицо, выполняющее действие", "-er", "", (("employer", "работодатель"),)),
+    AffixGroup("nv_ion", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: действие или результат действия", "-ion", "", (("confusion", "путаница"),)),
+    AffixGroup("nv_or", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: лицо или устройство", "-or", "", (("detector", "детектор"),)),
+    AffixGroup("nv_ment", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: действие или результат действия", "-ment", "", (("improvement", "улучшение"),)),
+    AffixGroup("nv_sion", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: действие или результат действия", "-sion", "", (("division", "разделение"),)),
+    AffixGroup("nv_tion", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: действие или результат действия", "-tion", "", (("invention", "изобретение"),)),
+    AffixGroup("nv_ure", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: действие или результат действия", "-ure", "", (("failure", "неудача"),)),
+    AffixGroup("nv_y", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: действие или результат действия", "-y", "", (("recovery", "восстановление"),)),
+    AffixGroup("nv_ee", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: лицо, на которое направлено действие", "-ee", "", (("employee", "сотрудник"),)),
+    AffixGroup("nv_ant", "Суффикс", f"{NOUNS_FROM_VERBS_TITLE}: лицо или предмет, связанный с действием", "-ant", "", (("inhabitant", "житель"),)),
+)
+NOUNS_FROM_VERBS_GROUP_IDS = frozenset(group.id for group in NOUNS_FROM_VERBS_GROUPS)
+NOUNS_FROM_VERBS_EXCEPTION_GROUP = AffixGroup(
+    "nv_exceptions",
+    "Суффикс",
+    f"{NOUNS_FROM_VERBS_TITLE}: слова-исключения",
+    "исключения",
+    "",
+    (),
+)
+
+NOUNS_FROM_VERBS_STUDY_WORDS: tuple[StudyWord, ...] = (
+    StudyWord("nv_ance", "accept", "acceptance", "принятие"),
+    StudyWord("nv_sion", "admit", "admission", "допуск, прием"),
+    StudyWord("nv_ment", "advertise", "advertisement", "объявление, реклама"),
+    StudyWord("nv_ment", "announce", "announcement", "объявление"),
+    StudyWord("nv_ation", "apply", "application", "заявление, применение"),
+    StudyWord("nv_al", "approve", "approval", "одобрение"),
+    StudyWord("nv_ment", "arrange", "arrangement", "договоренность, расположение"),
+    StudyWord("nv_ance", "assist", "assistance", "помощь"),
+    StudyWord("nv_ance", "attend", "attendance", "посещаемость"),
+    StudyWord("nv_ion", "attract", "attraction", "привлекательность"),
+    StudyWord("nv_ion", "celebrate", "celebration", "празднование"),
+    StudyWord("nv_ation", "combine", "combination", "сочетание"),
+    StudyWord("nv_sion", "confess", "confession", "признание"),
+    StudyWord("nv_ation", "continue", "continuation", "продолжение"),
+    StudyWord("nv_sion", "decide", "decision", "решение"),
+    StudyWord("nv_al", "deny", "denial", "отрицание"),
+    StudyWord("nv_tion", "describe", "description", "описание"),
+    StudyWord("nv_tion", "dictate", "dictation", "диктовка"),
+    StudyWord("nv_ment", "disappoint", "disappointment", "разочарование"),
+    StudyWord("nv_y", "discover", "discovery", "открытие"),
+    StudyWord("nv_sion", "divide", "division", "разделение"),
+    StudyWord("nv_ation", "educate", "education", "образование"),
+    StudyWord("nv_ion", "elect", "election", "выборы"),
+    StudyWord("nv_ment", "employ", "employment", "занятость"),
+    StudyWord("nv_ment", "excite", "excitement", "возбуждение"),
+    StudyWord("nv_ence", "exist", "existence", "существование"),
+    StudyWord("nv_ation", "explain", "explanation", "объяснение"),
+    StudyWord("nv_ation", "hesitate", "hesitation", "колебание"),
+    StudyWord("nv_ation", "imagine", "imagination", "воображение"),
+    StudyWord("nv_ation", "imitate", "imitation", "имитация"),
+    StudyWord("nv_ion", "impress", "impression", "впечатление"),
+    StudyWord("nv_ment", "improve", "improvement", "улучшение"),
+    StudyWord("nv_ence", "insist", "insistence", "настойчивость"),
+    StudyWord("nv_ion", "interrupt", "interruption", "прерывание"),
+    StudyWord("nv_tion", "introduce", "introduction", "введение"),
+    StudyWord("nv_sion", "invade", "invasion", "вторжение"),
+    StudyWord("nv_tion", "invent", "invention", "изобретение"),
+    StudyWord("nv_age", "marry", "marriage", "брак"),
+    StudyWord("nv_ure", "mix", "mixture", "смесь"),
+    StudyWord("nv_ation", "operate", "operation", "операция"),
+    StudyWord("nv_age", "pass", "passage", "проход, отрывок"),
+    StudyWord("nv_ance", "perform", "performance", "исполнение, производительность"),
+    StudyWord("nv_sion", "permit", "permission", "разрешение"),
+    StudyWord("nv_sion", "possess", "possession", "владение"),
+    StudyWord("nv_ence", "prefer", "preference", "предпочтение"),
+    StudyWord("nv_ation", "prepare", "preparation", "подготовка"),
+    StudyWord("nv_er", "produce", "producer", "производитель"),
+    StudyWord("nv_tion", "produce", "production", "производство"),
+    StudyWord("nv_tion", "protect", "protection", "защита"),
+    StudyWord("nv_ment", "punish", "punishment", "наказание"),
+    StudyWord("nv_ation", "qualify", "qualification", "квалификация"),
+    StudyWord("nv_tion", "receive", "reception", "прием"),
+    StudyWord("nv_ence", "refer", "reference", "ссылка"),
+    StudyWord("nv_al", "refuse", "refusal", "отказ"),
+    StudyWord("nv_tion", "repeat", "repetition", "повторение"),
+    StudyWord("nv_er", "research", "researcher", "исследователь"),
+    StudyWord("nv_ation", "restore", "restoration", "восстановление"),
+    StudyWord("nv_sion", "revise", "revision", "пересмотр"),
+    StudyWord("nv_ion", "satisfy", "satisfaction", "удовлетворение"),
+    StudyWord("nv_ion", "solve", "solution", "решение"),
+    StudyWord("nv_ion", "suggest", "suggestion", "предложение"),
+    StudyWord("nv_tion", "translate", "translation", "перевод"),
+    StudyWord("nv_ment", "treat", "treatment", "лечение, обращение"),
+)
+
+NOUNS_FROM_VERBS_EXCEPTION_SETS: tuple[StudyExceptionSet, ...] = (
+    StudyExceptionSet(
+        "Слова-исключения: Nouns from verbs",
+        NOUNS_FROM_VERBS_GROUP_IDS,
+        (
+            StudyWord("nv_exceptions", "advise", "advice", "совет"),
+            StudyWord("nv_exceptions", "behave", "behaviour", "поведение"),
+            StudyWord("nv_exceptions", "believe", "belief", "вера"),
+            StudyWord("nv_exceptions", "fly", "flight", "полет"),
+            StudyWord("nv_exceptions", "grow", "growth", "рост"),
+            StudyWord("nv_exceptions", "hate", "hatred", "ненависть"),
+            StudyWord("nv_exceptions", "know", "knowledge", "знание"),
+            StudyWord("nv_exceptions", "live", "life", "жизнь"),
+            StudyWord("nv_exceptions", "lose", "loss", "потеря"),
+            StudyWord("nv_exceptions", "choose", "choice", "выбор"),
+            StudyWord("nv_exceptions", "complain", "complaint", "жалоба"),
+            StudyWord("nv_exceptions", "die", "death", "смерть"),
+            StudyWord("nv_exceptions", "practise", "practice", "практика"),
+            StudyWord("nv_exceptions", "prove", "proof", "доказательство"),
+            StudyWord("nv_exceptions", "serve", "service", "услуга, служба"),
+            StudyWord("nv_exceptions", "speak", "speech", "речь"),
+            StudyWord("nv_exceptions", "think", "thought", "мысль"),
+            StudyWord("nv_exceptions", "weigh", "weight", "вес"),
+        ),
+    ),
+)
+
+AFFIX_GROUPS = AFFIX_GROUPS + NOUNS_FROM_VERBS_GROUPS
+GROUP_BY_ID = {
+    **{group.id: group for group in AFFIX_GROUPS},
+    NOUNS_FROM_VERBS_EXCEPTION_GROUP.id: NOUNS_FROM_VERBS_EXCEPTION_GROUP,
+}
 
 
 def groups_by_kind(kind: str) -> list[AffixGroup]:

@@ -24,8 +24,15 @@ except ImportError:
     def load_dotenv() -> bool:
         return False
 
-from affix_data import AFFIX_GROUPS, GROUP_BY_ID, AffixGroup, groups_by_kind
-from cambridge import load_words as load_cambridge_words
+from affix_data import (
+    AFFIX_GROUPS,
+    GROUP_BY_ID,
+    NOUNS_FROM_VERBS_EXCEPTION_SETS,
+    NOUNS_FROM_VERBS_STUDY_WORDS,
+    AffixGroup,
+    groups_by_kind,
+)
+from wiktionary import load_words as load_wiktionary_words
 
 try:
     from aiogram.types import InputRichMessage
@@ -63,6 +70,7 @@ class QuizQuestion:
     group_id: str
     english: str
     russian: str
+    source_word: str | None = None
 
 
 @dataclass
@@ -72,13 +80,16 @@ class UserState:
     current_question: QuizQuestion | None = None
     main_message_id: int | None = None
     question_message_id: int | None = None
+    word_source: str = "static"
+    include_study_words: bool = True
+    include_exceptions: bool = False
     reminders: ReminderSettings = field(default_factory=ReminderSettings)
 
 
 router = Router()
 states: dict[int, UserState] = {}
-cambridge_examples: dict[str, list[tuple[str, str]]] = {}
-cambridge_base_words: dict[str, str] = {}
+dictionary_examples: dict[str, list[tuple[str, str]]] = {}
+dictionary_base_words: dict[str, str] = {}
 
 
 def user_state(user_id: int) -> UserState:
@@ -124,6 +135,11 @@ def quiz_menu_keyboard(state: UserState) -> InlineKeyboardMarkup:
             style="danger" if state.quiz_enabled else "success",
         )],
         [InlineKeyboardButton(text="Настроить группы", callback_data="quiz:groups:0")],
+        [InlineKeyboardButton(
+            text=f"Режим: {'статичный' if state.word_source == 'static' else 'динамичный'}",
+            callback_data="quiz:source",
+            style="primary",
+        )],
         [InlineKeyboardButton(text="Назад", callback_data="main")],
     ])
 
@@ -155,7 +171,20 @@ def group_settings_keyboard(state: UserState, page: int) -> InlineKeyboardMarkup
         nav.append(InlineKeyboardButton(text="Дальше", callback_data=f"quiz:groups:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="Включить все", callback_data=f"quiz:g_all:{page}")])
+    all_enabled = all(group.id in state.enabled_group_ids for group in groups)
+    rows.append([InlineKeyboardButton(
+        text="Выключить все" if all_enabled else "Включить все",
+        callback_data=f"quiz:g_all:{page}",
+        style="danger" if all_enabled else "success",
+    )])
+    rows.append([InlineKeyboardButton(
+        text=f"Слова из упражнения: {'V' if state.include_study_words else 'X'}",
+        callback_data="quiz:study_words",
+    )])
+    rows.append([InlineKeyboardButton(
+        text=f"Слова-исключения: {'V' if state.include_exceptions else 'X'}",
+        callback_data="quiz:exceptions",
+    )])
     rows.append([InlineKeyboardButton(text="К опросу", callback_data="quiz:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -216,7 +245,8 @@ def quiz_menu_content(state: UserState) -> Text:
         Bold("Опрос"),
         as_key_value("Статус", Bold("идет" if state.quiz_enabled else "остановлен")),
         as_key_value("Включено групп", Bold(f"{len(state.enabled_group_ids)}/{len(AFFIX_GROUPS)}")),
-        "Вопросы идут с русского на английский. Если ответ неправильный, бот показывает правильный вариант.",
+        as_key_value("Источник слов", Bold("примеры из таблиц" if state.word_source == "static" else "Wiktionary")),
+        "Вопросы идут с русского на английский. После ответа бот показывает правильный вариант.",
     )
 
 
@@ -224,6 +254,8 @@ def group_settings_content(state: UserState) -> Text:
     return as_list(
         Bold("Группы для опроса"),
         f"Включай и выключай значения из 2-го столбца таблицы. Сейчас активно: {len(state.enabled_group_ids)}.",
+        f"Слова из упражнения: {'V' if state.include_study_words else 'X'}. Слова-исключения: {'V' if state.include_exceptions else 'X'}.",
+        "Исключения появятся только при выборе всех связанных с ними подготовленных групп.",
     )
 
 
@@ -433,19 +465,35 @@ async def edit_table_message(bot: Bot, message: Message, kind: str, page: int, k
     await message.edit_text(plain_text, reply_markup=keyboard)
 
 
-def active_examples(state: UserState) -> list[tuple[AffixGroup, str, str]]:
-    items: list[tuple[AffixGroup, str, str]] = []
+def active_examples(state: UserState) -> list[tuple[AffixGroup, str, str, str | None]]:
+    items: list[tuple[AffixGroup, str, str, str | None]] = []
     for group in AFFIX_GROUPS:
         if group.id in state.enabled_group_ids:
-            items.extend((group, english, russian) for english, russian in group.examples)
-            items.extend((group, english, russian) for english, russian in cambridge_examples.get(group.id, ()))
+            if state.word_source == "static":
+                items.extend((group, english, russian, None) for english, russian in group.examples)
+            else:
+                items.extend((group, english, russian, None) for english, russian in dictionary_examples.get(group.id, ()))
+
+    if state.word_source == "static" and state.include_study_words:
+        items.extend(
+            (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
+            for word in NOUNS_FROM_VERBS_STUDY_WORDS
+            if word.group_id in state.enabled_group_ids
+        )
+    if state.word_source == "static" and state.include_exceptions:
+        for exception_set in NOUNS_FROM_VERBS_EXCEPTION_SETS:
+            if exception_set.group_ids.issubset(state.enabled_group_ids):
+                items.extend(
+                    (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
+                    for word in exception_set.words
+                )
     return items
 
 
-def parsed_cambridge_words() -> list[tuple[str, str]]:
+def parsed_dictionary_words() -> list[tuple[str, str]]:
     words = {
         (english.casefold(), russian.casefold()): (english, russian)
-        for examples in cambridge_examples.values()
+        for examples in dictionary_examples.values()
         for english, russian in examples
     }
     return sorted(words.values(), key=lambda item: (item[0].casefold(), item[1].casefold()))
@@ -472,8 +520,13 @@ def make_question(state: UserState) -> QuizQuestion | None:
     examples = active_examples(state)
     if not examples:
         return None
-    group, english, russian = random.choice(examples)
-    state.current_question = QuizQuestion(group_id=group.id, english=english, russian=russian)
+    group, english, russian, source_word = random.choice(examples)
+    state.current_question = QuizQuestion(
+        group_id=group.id,
+        english=english,
+        russian=russian,
+        source_word=source_word,
+    )
     return state.current_question
 
 
@@ -513,9 +566,11 @@ BASE_WORD_OVERRIDES = {
 
 def base_word(question: QuizQuestion) -> str:
     """Return the English stem to show alongside the affix meaning."""
+    if question.source_word:
+        return question.source_word
     word = question.english.removeprefix("to ").lower()
-    if word in cambridge_base_words:
-        return cambridge_base_words[word]
+    if word in dictionary_base_words:
+        return dictionary_base_words[word]
     if word in BASE_WORD_OVERRIDES:
         return BASE_WORD_OVERRIDES[word]
 
@@ -558,14 +613,14 @@ async def start(message: Message) -> None:
 
 @router.message(Command("list"))
 async def list_parsed_words(message: Message) -> None:
-    words = parsed_cambridge_words()
+    words = parsed_dictionary_words()
     if not words:
         await message.answer(
-            "Слова Cambridge ещё не загружены. Добавь CAMBRIDGE_ACCESS_KEY и перезапусти бота."
+            "Слова Wiktionary ещё загружаются. Подожди немного и повтори /list."
         )
         return
 
-    await message.answer(**as_list(Bold("Слова Cambridge"), f"Загружено: {len(words)}.").as_kwargs())
+    await message.answer(**as_list(Bold("Слова Wiktionary"), f"Загружено: {len(words)}.").as_kwargs())
     lines = [f"{html.escape(english)} - {html.escape(russian)}" for english, russian in words]
     for chunk in split_message_lines(lines):
         await message.answer(chunk)
@@ -617,7 +672,12 @@ async def quiz_toggle(callback: CallbackQuery, bot: Bot) -> None:
         question = make_question(state)
         if question is None:
             state.quiz_enabled = False
-            await callback.answer("Сначала включи хотя бы одну группу.", show_alert=True)
+            message = (
+                "В динамичном режиме пока нет слов Wiktionary. Подожди завершения загрузки и проверь выбранные группы."
+                if state.word_source == "dynamic"
+                else "Сначала включи хотя бы одну группу."
+            )
+            await callback.answer(message, show_alert=True)
             return
         await safe_edit_content(callback.message, quiz_menu_content(state), quiz_menu_keyboard(state))
         await send_question(bot, callback.message.chat.id, state)
@@ -666,11 +726,37 @@ async def quiz_hint(callback: CallbackQuery) -> None:
     )
 
 
+@router.callback_query(F.data == "quiz:source")
+async def quiz_source(callback: CallbackQuery) -> None:
+    state = user_state(callback.from_user.id)
+    state.word_source = "dynamic" if state.word_source == "static" else "static"
+    await safe_edit_content(callback.message, quiz_menu_content(state), quiz_menu_keyboard(state))
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("quiz:groups:"))
 async def quiz_groups(callback: CallbackQuery) -> None:
     state = user_state(callback.from_user.id)
     state.main_message_id = callback.message.message_id
     page = int(callback.data.rsplit(":", 1)[1])
+    await safe_edit_content(callback.message, group_settings_content(state), group_settings_keyboard(state, page))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "quiz:study_words")
+async def quiz_study_words(callback: CallbackQuery) -> None:
+    state = user_state(callback.from_user.id)
+    state.include_study_words = not state.include_study_words
+    page = 0
+    await safe_edit_content(callback.message, group_settings_content(state), group_settings_keyboard(state, page))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "quiz:exceptions")
+async def quiz_exceptions(callback: CallbackQuery) -> None:
+    state = user_state(callback.from_user.id)
+    state.include_exceptions = not state.include_exceptions
+    page = 0
     await safe_edit_content(callback.message, group_settings_content(state), group_settings_keyboard(state, page))
     await callback.answer()
 
@@ -693,7 +779,11 @@ async def quiz_group_toggle(callback: CallbackQuery) -> None:
 async def quiz_group_all(callback: CallbackQuery) -> None:
     state = user_state(callback.from_user.id)
     state.main_message_id = callback.message.message_id
-    state.enabled_group_ids = {group.id for group in AFFIX_GROUPS}
+    all_group_ids = {group.id for group in AFFIX_GROUPS}
+    if all_group_ids.issubset(state.enabled_group_ids):
+        state.enabled_group_ids.clear()
+    else:
+        state.enabled_group_ids = all_group_ids
     page = int(callback.data.rsplit(":", 1)[1])
     await safe_edit_content(callback.message, group_settings_content(state), group_settings_keyboard(state, page))
     await callback.answer()
@@ -881,18 +971,12 @@ async def reminder_loop(bot: Bot) -> None:
         await asyncio.sleep(30)
 
 
-async def load_cambridge_quiz_words() -> None:
-    access_key = os.getenv("CAMBRIDGE_ACCESS_KEY")
-    if not access_key:
-        return
-    examples, bases = await load_cambridge_words(
-        access_key,
-        os.getenv("CAMBRIDGE_DICTIONARY_CODE") or None,
-    )
-    cambridge_examples.update(examples)
-    cambridge_base_words.update(bases)
+async def load_wiktionary_quiz_words() -> None:
+    examples, bases = await load_wiktionary_words()
+    dictionary_examples.update(examples)
+    dictionary_base_words.update(bases)
     loaded_count = sum(len(words) for words in examples.values())
-    logging.getLogger(__name__).info("Loaded %s Cambridge quiz words", loaded_count)
+    logging.getLogger(__name__).info("Loaded %s Wiktionary quiz words", loaded_count)
 
 
 async def main() -> None:
@@ -904,7 +988,7 @@ async def main() -> None:
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(router)
     asyncio.create_task(reminder_loop(bot))
-    asyncio.create_task(load_cambridge_quiz_words())
+    asyncio.create_task(load_wiktionary_quiz_words())
     await dispatcher.start_polling(bot)
 
 
