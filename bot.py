@@ -14,7 +14,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.formatting import Bold, Text, as_key_value, as_line, as_list
@@ -87,8 +87,8 @@ def user_state(user_id: int) -> UserState:
 
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Таблица", callback_data="table:menu")],
-        [InlineKeyboardButton(text="Опрос", callback_data="quiz:menu")],
+        [InlineKeyboardButton(text="Таблица", callback_data="table:menu", style="primary")],
+        [InlineKeyboardButton(text="Опрос", callback_data="quiz:menu", style="success")],
         [InlineKeyboardButton(text="Напоминания", callback_data="rem:menu")],
     ])
 
@@ -118,7 +118,11 @@ def table_keyboard(kind: str, page: int, max_page: int) -> InlineKeyboardMarkup:
 def quiz_menu_keyboard(state: UserState) -> InlineKeyboardMarkup:
     enabled = "Остановить опрос" if state.quiz_enabled else "Начать опрос"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=enabled, callback_data="quiz:toggle")],
+        [InlineKeyboardButton(
+            text=enabled,
+            callback_data="quiz:toggle",
+            style="danger" if state.quiz_enabled else "success",
+        )],
         [InlineKeyboardButton(text="Настроить группы", callback_data="quiz:groups:0")],
         [InlineKeyboardButton(text="Назад", callback_data="main")],
     ])
@@ -128,7 +132,7 @@ def quiz_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Подсказка", callback_data="quiz:hint")],
         [InlineKeyboardButton(text="Следующий вопрос", callback_data="quiz:next")],
-        [InlineKeyboardButton(text="Остановить", callback_data="quiz:stop")],
+        [InlineKeyboardButton(text="Остановить", callback_data="quiz:stop", style="danger")],
     ])
 
 
@@ -160,7 +164,11 @@ def reminder_keyboard(state: UserState) -> InlineKeyboardMarkup:
     reminder = state.reminders
     enabled = "Выключить" if reminder.enabled else "Включить"
     rows = [
-        [InlineKeyboardButton(text=enabled, callback_data="rem:toggle")],
+        [InlineKeyboardButton(
+            text=enabled,
+            callback_data="rem:toggle",
+            style="danger" if reminder.enabled else "success",
+        )],
         [
             InlineKeyboardButton(text="-30 мин", callback_data="rem:interval:-30"),
             InlineKeyboardButton(text="+30 мин", callback_data="rem:interval:30"),
@@ -434,6 +442,32 @@ def active_examples(state: UserState) -> list[tuple[AffixGroup, str, str]]:
     return items
 
 
+def parsed_cambridge_words() -> list[tuple[str, str]]:
+    words = {
+        (english.casefold(), russian.casefold()): (english, russian)
+        for examples in cambridge_examples.values()
+        for english, russian in examples
+    }
+    return sorted(words.values(), key=lambda item: (item[0].casefold(), item[1].casefold()))
+
+
+def split_message_lines(lines: list[str], limit: int = 3500) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    current_length = 0
+    for line in lines:
+        added_length = len(line) + (1 if current else 0)
+        if current and current_length + added_length > limit:
+            chunks.append("\n".join(current))
+            current = []
+            current_length = 0
+        current.append(line)
+        current_length += len(line) + (1 if len(current) > 1 else 0)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 def make_question(state: UserState) -> QuizQuestion | None:
     examples = active_examples(state)
     if not examples:
@@ -520,6 +554,21 @@ async def start(message: Message) -> None:
     state = user_state(message.from_user.id)
     sent = await message.answer(**main_content().as_kwargs(), reply_markup=main_keyboard())
     state.main_message_id = sent.message_id
+
+
+@router.message(Command("list"))
+async def list_parsed_words(message: Message) -> None:
+    words = parsed_cambridge_words()
+    if not words:
+        await message.answer(
+            "Слова Cambridge ещё не загружены. Добавь CAMBRIDGE_ACCESS_KEY и перезапусти бота."
+        )
+        return
+
+    await message.answer(**as_list(Bold("Слова Cambridge"), f"Загружено: {len(words)}.").as_kwargs())
+    lines = [f"{html.escape(english)} - {html.escape(russian)}" for english, russian in words]
+    for chunk in split_message_lines(lines):
+        await message.answer(chunk)
 
 
 @router.callback_query(F.data == "main")
@@ -746,7 +795,11 @@ async def answer_quiz(message: Message, bot: Bot) -> None:
         await message.answer("Открой /start и выбери действие через кнопки.")
         return
     correct = normalize_answer(message.text or "") == normalize_answer(question.english)
-    result = Text("Верно.") if correct else Text("Неверно. Правильный ответ: ", Bold(question.english), ".")
+    result = Text(
+        "Верно. Правильный ответ: " if correct else "Неверно. Правильный ответ: ",
+        Bold(question.english),
+        ".",
+    )
     try:
         await message.delete()
     except TelegramBadRequest:
@@ -793,7 +846,11 @@ async def send_reminder_notification(bot: Bot, user_id: int, reminder: ReminderS
             user_id,
             "Пора повторить частички.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Закрыть уведомление", callback_data="rem:close")],
+                [InlineKeyboardButton(
+                    text="Закрыть уведомление",
+                    callback_data="rem:close",
+                    style="danger",
+                )],
             ]),
         )
     except (TelegramBadRequest, TelegramForbiddenError):
