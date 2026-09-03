@@ -239,6 +239,13 @@ NOUNS_FROM_VERBS_PRESET = QuizPreset(
 QUIZ_PRESETS: tuple[QuizPreset, ...] = (NOUNS_FROM_VERBS_PRESET,)
 PRESET_BY_ID = {preset.id: preset for preset in QUIZ_PRESETS}
 PRESET_GROUP_IDS = frozenset(group_id for preset in QUIZ_PRESETS for group_id in preset.group_ids)
+ALL_PRESET_EXCEPTION_WORDS = tuple(
+    {
+        (word.base_word.casefold(), word.english.casefold()): word
+        for preset in QUIZ_PRESETS
+        for word in preset.exception_words
+    }.values()
+)
 SELECTABLE_AFFIX_GROUPS = tuple(group for group in AFFIX_GROUPS if group.id not in PRESET_GROUP_IDS)
 GROUP_BY_ID = {
     **{group.id: group for group in AFFIX_GROUPS},

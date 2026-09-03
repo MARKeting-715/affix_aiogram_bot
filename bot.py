@@ -26,6 +26,7 @@ except ImportError:
 
 from affix_data import (
     AFFIX_GROUPS,
+    ALL_PRESET_EXCEPTION_WORDS,
     GROUP_BY_ID,
     PRESET_BY_ID,
     QUIZ_PRESETS,
@@ -78,6 +79,7 @@ class QuizQuestion:
 class UserState:
     enabled_group_ids: set[str] = field(default_factory=set)
     enabled_preset_ids: set[str] = field(default_factory=set)
+    include_all_exceptions: bool = False
     quiz_enabled: bool = False
     current_question: QuizQuestion | None = None
     main_message_id: int | None = None
@@ -157,15 +159,8 @@ def group_settings_keyboard(state: UserState, page: int) -> InlineKeyboardMarkup
     max_page = max(0, (len(groups) - 1) // PAGE_SIZE)
     visible = groups[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
     rows = []
-    for preset in QUIZ_PRESETS:
-        mark = "V" if preset.id in state.enabled_preset_ids else "X"
-        rows.append([InlineKeyboardButton(
-            text=f"{mark} {preset.title}",
-            callback_data=f"quiz:preset:{preset.id}:{page}",
-            style="primary" if preset.id in state.enabled_preset_ids else None,
-        )])
     for group in visible:
-        mark = "✓" if group.id in state.enabled_group_ids else "×"
+        mark = "✓" if group.id in state.enabled_group_ids else "✕"
         label = f"{mark} {group.affixes} | {group.group}"
         rows.append([InlineKeyboardButton(
             text=f"{label[:61]}..." if len(label) > 64 else label,
@@ -181,13 +176,27 @@ def group_settings_keyboard(state: UserState, page: int) -> InlineKeyboardMarkup
     all_enabled = (
         all(group.id in state.enabled_group_ids for group in groups)
         and all(preset.id in state.enabled_preset_ids for preset in QUIZ_PRESETS)
+        and state.include_all_exceptions
     )
     rows.append([InlineKeyboardButton(
         text="Выключить все" if all_enabled else "Включить все",
         callback_data=f"quiz:g_all:{page}",
         style="danger" if all_enabled else "success",
     )])
-    rows.append([InlineKeyboardButton(text="К опросу", callback_data="quiz:menu")])
+    exception_mark = "✓" if state.include_all_exceptions else "✕"
+    rows.append([InlineKeyboardButton(
+        text=f"{exception_mark} Все исключения",
+        callback_data=f"quiz:all_exceptions:{page}",
+        style="primary" if state.include_all_exceptions else None,
+    )])
+    for preset in QUIZ_PRESETS:
+        mark = "✓" if preset.id in state.enabled_preset_ids else "✕"
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {preset.title}",
+            callback_data=f"quiz:preset:{preset.id}:{page}",
+            style="primary" if preset.id in state.enabled_preset_ids else None,
+        )])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="quiz:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -219,7 +228,7 @@ def reminder_keyboard(state: UserState) -> InlineKeyboardMarkup:
     ]
     rows.extend(
         [InlineKeyboardButton(
-            text=f"{'×' if i in reminder.disabled_weekdays else '✓'} {name}",
+            text=f"{'✕' if i in reminder.disabled_weekdays else '✓'} {name}",
             callback_data=f"rem:day:{i}",
         )]
         for i, name in enumerate(WEEKDAYS)
@@ -256,8 +265,9 @@ def quiz_menu_content(state: UserState) -> Text:
 def group_settings_content(state: UserState) -> Text:
     return as_list(
         Bold("Группы для опроса"),
-        "Сначала выбери готовый пресет. Он включает все свои окончания, слова из упражнения и исключения.",
-        f"Сейчас выбрано: {len(state.enabled_preset_ids)} пресетов и {len(state.enabled_group_ids)} обычных групп.",
+        "Выбирай отдельные аффиксы или готовый пресет. Пресет всегда включает свои слова и связанные с ним исключения.",
+        "Кнопка «Все исключения» добавляет исключения из всех пресетов.",
+        f"Сейчас выбрано: {len(state.enabled_preset_ids)} пресетов, {len(state.enabled_group_ids)} обычных групп; все исключения: {'включены' if state.include_all_exceptions else 'выключены'}.",
     )
 
 
@@ -489,11 +499,23 @@ def active_examples(state: UserState) -> list[tuple[AffixGroup, str, str, str | 
                 (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
                 for word in preset.study_words
             )
-            items.extend(
-                (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
-                for word in preset.exception_words
-            )
-    return items
+        items.extend(
+            (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
+            for word in preset.exception_words
+        )
+
+    if state.include_all_exceptions:
+        items.extend(
+            (GROUP_BY_ID[word.group_id], word.english, word.russian, word.base_word)
+            for word in ALL_PRESET_EXCEPTION_WORDS
+        )
+
+    unique_items = {
+        (group.id, english.casefold(), russian.casefold(), source_word.casefold() if source_word else None):
+        (group, english, russian, source_word)
+        for group, english, russian, source_word in items
+    }
+    return list(unique_items.values())
 
 
 def parsed_dictionary_words() -> list[tuple[str, str]]:
@@ -762,6 +784,15 @@ async def quiz_preset_toggle(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("quiz:all_exceptions:"))
+async def quiz_all_exceptions_toggle(callback: CallbackQuery) -> None:
+    state = user_state(callback.from_user.id)
+    state.include_all_exceptions = not state.include_all_exceptions
+    page = int(callback.data.rsplit(":", 1)[1])
+    await safe_edit_content(callback.message, group_settings_content(state), group_settings_keyboard(state, page))
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("quiz:g_toggle:"))
 async def quiz_group_toggle(callback: CallbackQuery) -> None:
     state = user_state(callback.from_user.id)
@@ -782,12 +813,18 @@ async def quiz_group_all(callback: CallbackQuery) -> None:
     state.main_message_id = callback.message.message_id
     all_group_ids = {group.id for group in SELECTABLE_AFFIX_GROUPS}
     all_preset_ids = {preset.id for preset in QUIZ_PRESETS}
-    if all_group_ids.issubset(state.enabled_group_ids) and all_preset_ids.issubset(state.enabled_preset_ids):
+    if (
+        all_group_ids.issubset(state.enabled_group_ids)
+        and all_preset_ids.issubset(state.enabled_preset_ids)
+        and state.include_all_exceptions
+    ):
         state.enabled_group_ids.clear()
         state.enabled_preset_ids.clear()
+        state.include_all_exceptions = False
     else:
         state.enabled_group_ids = all_group_ids
         state.enabled_preset_ids = all_preset_ids
+        state.include_all_exceptions = True
     page = int(callback.data.rsplit(":", 1)[1])
     await safe_edit_content(callback.message, group_settings_content(state), group_settings_keyboard(state, page))
     await callback.answer()
